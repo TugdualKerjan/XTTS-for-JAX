@@ -70,6 +70,51 @@ class Tokenizer:
         mel = mel / mel_norms.unsqueeze(0).unsqueeze(-1)
         return mel
 
+    def mel_to_dvae_wav(
+        self,
+        mel,
+        mel_norms_file="./mel_stats.pth",
+        mel_norms=None,
+        device=torch.device("cpu"),
+    ):
+        if mel_norms is None:
+            mel_norms = torch.load(
+                mel_norms_file, weights_only=True, map_location=device
+            )
+        mel = mel * mel_norms.unsqueeze(0).unsqueeze(-1)
+        mel = torch.exp(mel)
+
+        mel_stft = torchaudio.transforms.MelSpectrogram(
+            n_fft=1024,
+            hop_length=256,
+            win_length=1024,
+            power=2,
+            normalized=False,
+            sample_rate=22050,
+            f_min=0,
+            f_max=8000,
+            n_mels=80,
+            norm="slaney",
+        ).to(device)
+
+        # Create the inverse mel filter bank
+        inv_mel_basis = torch.pinverse(mel_stft.mel_scale.fb).to(device)
+
+        # Convert mel spectrogram to linear spectrogram
+        spec = torch.matmul(inv_mel_basis, mel)
+
+        # Use Griffin-Lim algorithm to convert spectrogram to waveform
+        griffin_lim = torchaudio.transforms.GriffinLim(
+            n_fft=1024,
+            hop_length=256,
+            win_length=1024,
+            power=2,
+            n_iter=32,
+        ).to(device)
+
+        wav = griffin_lim(spec)
+        return wav
+
     def pad(self, input, actual_length):
         padding_to_add = 200 - actual_length
         result = numpy.pad(
