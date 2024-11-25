@@ -19,13 +19,13 @@ class ResBlock(eqx.Module):
 
         key1, key2, key3 = jax.random.split(key, 3)
 
-        self.conv1 = nn.Conv1d(dim, dim, kernel_size=3, padding=(1,), key=key1)
-        self.conv2 = nn.Conv1d(dim, dim, kernel_size=3, padding=(1,), key=key2)
-        self.conv3 = nn.Conv1d(dim, dim, kernel_size=1, key=key3)
+        self.conv1 = nn.Conv1d(dim, dim, kernel_size=3, padding="SAME", key=key1)
+        self.conv2 = nn.Conv1d(dim, dim, kernel_size=3, padding="SAME", key=key2)
+        self.conv3 = nn.Conv1d(dim, dim, kernel_size=1, padding="SAME", key=key3)
 
         self.act = activation
 
-    @jax.jit
+    @eqx.filter_jit
     def __call__(self, x):
         y = x
 
@@ -44,52 +44,63 @@ class Encoder(eqx.Module):
     conv1: nn.Conv1d
     conv2: nn.Conv1d
     conv3: nn.Conv1d
+    conv4: nn.Conv1d
     res1: ResBlock
     res2: ResBlock
     res3: ResBlock
 
     def __init__(self, hidden_dim: int = 1024, codebook_dim: int = 512, key=None):
-        key1, key2, key3, key4, key5, key6 = jax.random.split(key, 6)
+        key1, key2, key3, key4, key5, key6, key7 = jax.random.split(key, 7)
 
         self.conv1 = nn.Conv1d(
-            in_channels=80,
-            out_channels=512,
+            in_channels=1,
+            out_channels=hidden_dim//64,
             kernel_size=3,
             stride=2,
-            padding=(1,),
+            padding="SAME",
             key=key1,
         )
+        self.res1 = ResBlock(dim=hidden_dim//64, key=key3)
         self.conv2 = nn.Conv1d(
-            in_channels=512,
-            out_channels=hidden_dim,
+            in_channels=hidden_dim//64,
+            out_channels=hidden_dim//8,
             kernel_size=3,
             stride=2,
-            padding=(1,),
+            padding="SAME",
             key=key2,
         )
-        self.res1 = ResBlock(dim=hidden_dim, key=key3)
-        self.res2 = ResBlock(dim=hidden_dim, key=key4)
-        self.res3 = ResBlock(dim=hidden_dim, key=key5)
+        self.res2 = ResBlock(dim=hidden_dim//8, key=key4)
         self.conv3 = nn.Conv1d(
+            in_channels=hidden_dim//8,
+            out_channels=hidden_dim,
+            kernel_size=1,
+            stride=1,
+            padding="SAME",
+            key=key6,
+        )
+        self.res3 = ResBlock(dim=hidden_dim, key=key5)
+        self.conv4= nn.Conv1d(
             in_channels=hidden_dim,
             out_channels=codebook_dim,
             kernel_size=1,
             stride=1,
-            # padding="SAME",
-            key=key6,
+            padding="SAME",
+            key=key7,
         )
-
-    @jax.jit
+        
+    @eqx.filter_jit
     def __call__(self, x):
-
+        
+        x = jax.numpy.expand_dims(x, 0)
         y = self.conv1(x)
         y = jax.nn.relu(y)
+        y = self.res1(y)
         y = self.conv2(y)
         y = jax.nn.relu(y)
-        y = self.res1(y)
         y = self.res2(y)
-        y = self.res3(y)
         y = self.conv3(y)
+        y = self.res3(y)
+        y = self.conv4(y)
 
         return y
 
@@ -137,61 +148,51 @@ class Decoder(eqx.Module):
     res3: ResBlock
 
     def __init__(self, hidden_dim: int = 1024, codebook_dim: int = 512, key=None):
+
+        
         key1, key2, key3, key4, key5, key6, key7 = jax.random.split(key, 7)
 
-        self.conv1 = nn.Conv1d(
+        self.initial = nn.Conv1d(
             in_channels=codebook_dim,
             out_channels=hidden_dim,
             kernel_size=1,
             stride=1,
-            # padding="SAME",
+            padding="SAME",
             key=key1,
         )
         self.res1 = ResBlock(dim=hidden_dim, key=key2)
-        self.res2 = ResBlock(dim=hidden_dim, key=key3)
-        self.res3 = ResBlock(dim=hidden_dim, key=key4)
         self.conv2 = UpsampledConv(
             in_channels=hidden_dim,
             out_channels=hidden_dim,
-            kernel_size=3,
-            stride=2,
-            padding=(1,),
+            kernel_size=11,
+            stride=5,
+            padding="SAME",
             key=key5,
         )
+        self.res2 = ResBlock(dim=hidden_dim, key=key3)
         self.conv3 = UpsampledConv(
             in_channels=hidden_dim,
-            out_channels=512,
-            kernel_size=3,
-            stride=2,
-            padding=(1,),
+            out_channels=hidden_dim,
+            kernel_size=11,
+            stride=5,
+            padding="SAME",
             key=key6,
         )
-        self.conv4 = nn.Conv1d(
-            in_channels=512,
-            out_channels=80,
-            kernel_size=1,
-            stride=1,
-            # padding="SAME",
-            key=key7,
-        )
 
-    @jax.jit
+    @eqx.filter_jit
     def __call__(self, x):
 
         y = self.conv1(x)
         y = self.res1(y)
-        y = self.res2(y)
-        y = self.res3(y)
         y = self.conv2(y)
         y = jax.nn.relu(y)
+        y = self.res2(y)
         y = self.conv3(y)
         y = jax.nn.relu(y)
+        y = self.res3(y)
         y = self.conv4(y)
 
-        return y
-
-
-# | output: true
+        return jax.numpy.squeeze(y, 0)
 
 
 class Quantizer(eqx.Module):
@@ -222,33 +223,38 @@ class Quantizer(eqx.Module):
         # Init a matrix of vectors that will move with time
         self.codebook = jax.nn.initializers.variance_scaling(
             scale=1.0, mode="fan_in", distribution="uniform"
-        )(key, (num_dims, num_vecs))
+        )(key, (num_vecs, num_dims))
         self.codebook_avg = jnp.copy(self.codebook)
         self.cluster_size = jnp.zeros(num_vecs)
 
+    @eqx.filter_jit
     def __call__(self, x):
         # x has N vectors of the codebook dimension. We calculate the nearest neighbors and output those instead
 
-        x = jnp.permute_dims(x, (1, 0))
         flatten = jax.numpy.reshape(x, (-1, self.D))
         a_squared = jnp.sum(flatten**2, axis=-1, keepdims=True)
-        b_squared = jnp.sum(self.codebook**2, axis=0, keepdims=True)
-        distance = a_squared + b_squared - 2 * jnp.matmul(flatten, self.codebook)
+        b_squared = jnp.transpose(jnp.sum(self.codebook**2, axis=-1, keepdims=True))
+        distance = (
+            a_squared
+            + b_squared
+            - 2 * jnp.matmul(flatten, jnp.transpose(self.codebook))
+        )
 
         codebook_indices = jnp.argmin(distance, axis=-1)
-        # codebook_onehot = jax.nn.one_hot(codebook_indices, self.K)
-        # codebook_indices = codebook_indices.reshape(*x.shape[:-1])
-        z_q = self.codebook.T[codebook_indices]
+
+        z_q = self.codebook[codebook_indices]
 
         # Straight-through estimator
         z_q = flatten + jax.lax.stop_gradient(z_q - flatten)
+        
+        z_q = jax.numpy.reshape(z_q, (-1, x.shape[-1]))
 
-        z_q = jnp.permute_dims(z_q, (1, 0))
         return z_q, self.codebook_updates(flatten, codebook_indices)
 
     def codebook_updates(self, flatten, codebook_indices):
+
         # Calculate the usage of various codes.
-        codebook_onehot = jax.nn.one_hot(codebook_indices.T, self.K)
+        codebook_onehot = jax.nn.one_hot(codebook_indices, self.K)
         codebook_onehot_sum = jnp.sum(codebook_onehot, axis=0)
         codebook_sum = jnp.dot(flatten.T, codebook_onehot)
         # We've just weighed the codebook vectors.
@@ -260,19 +266,16 @@ class Quantizer(eqx.Module):
 
         # Where is the average embedding at ?
         new_codebook_avg = (
-            self.decay * self.codebook_avg.T + (1 - self.decay) * codebook_sum.T
+            self.decay * self.codebook_avg + (1 - self.decay) * codebook_sum.T
         )
 
         n = jnp.sum(new_cluster_size)  # Over the total embeddings used
-        new_cluster_size = (new_cluster_size + self.eps) / (n + self.K * self.eps) * n
-        new_codebook = self.codebook_avg.T / new_cluster_size[:, None]
+        new_cluster_size = ((new_cluster_size + self.eps) / (n + self.K * self.eps)) * n
+        new_codebook = self.codebook_avg / new_cluster_size[:, None]
 
-        updates = (new_cluster_size, new_codebook_avg.T, new_codebook.T)
+        updates = (new_cluster_size, new_codebook_avg, new_codebook)
 
         return updates, codebook_indices
-
-    def embed_code(self, embed_id):
-        return jax.nn.embedding(embed_id, self.codebook.T)
 
 
 class VQVAE(eqx.Module):
