@@ -247,6 +247,7 @@ class DiscriminatorP(eqx.Module):
         t_new = x_padded.shape[-1] // self.period
         return x_padded.reshape(c, t_new, self.period)
 
+    @eqx.filter_jit
     def __call__(self, x):
         # Feature map for loss
         fmap = []
@@ -283,6 +284,7 @@ class DiscriminatorS(eqx.Module):
         ]
         self.conv_post = nn.Conv1d(1024, 1, 3, 1, padding=1, key=key8)
 
+    @eqx.filter_jit
     def __call__(self, x):
         # Feature map for loss
         fmap = []
@@ -316,6 +318,7 @@ class MultiScaleDiscriminator(eqx.Module):
         ]
         # self.meanpool = nn.AvgPool1d(4, 2, padding=2)
 
+    @eqx.filter_jit
     def __call__(self, x):
         preds = []
         fmaps = []
@@ -341,6 +344,7 @@ class MultiPeriodDiscriminator(eqx.Module):
             for period, y in zip(periods, jax.random.split(key, len(periods)))
         ]
 
+    @eqx.filter_jit
     def __call__(self, x):
         preds = []
         fmaps = []
