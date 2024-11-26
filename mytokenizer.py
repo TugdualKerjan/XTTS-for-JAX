@@ -33,7 +33,7 @@ class Tokenizer:
             special_tokens=base_encoding._special_tokens,
         )
 
-        vqvae = VQVAE(1, 32, 64, [8], jax.random.key(1))
+        vqvae = VQVAE(1, 32, 4, [6], key=jax.random.key(1))
         self.vqvae = eqx.tree_deserialise_leaves(
             os.path.join(checkpoint_dir, "fsq.eqx"), vqvae
         )
@@ -64,8 +64,8 @@ class Tokenizer:
                 audio_array, orig_sr=sample_rate, target_sr=self.sample_rate
             )
 
-        freq = 8
-        stride = int(24000 / freq)
+        freq=16
+        stride = int(16000 / freq)
         
         input = []
         for i in range(0, (int(len(audio_array)//stride) -1)):
@@ -80,8 +80,8 @@ class Tokenizer:
         
         y = jax.vmap(self.vqvae.quantizer)(y)
         print(f"Shape of the output of quantizer : {y.shape}")
-        print(y)
         y = jax.vmap(self.vqvae.quantizer.codes_to_indexes)(jnp.expand_dims(y, -1))
+        print(y)
 
         
 
